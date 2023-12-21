@@ -18,12 +18,12 @@ register(MulticoreParam(4)) # multicore processing for DESeq2
 # 2. Untar folder and extract files
 # --------------
 
-#folder_name = "brca_tcga_pan_can_atlas_2018.tar"
-#untar(folder_name)
+folder_name = "brca_tcga_pan_can_atlas_2018.tar"
+untar(folder_name)
 
 new_dir = paste(getwd(), "brca_tcga_pan_can_atlas_2018", sep ="/" )
 # set working directory to brca data folder
-# setwd(new_dir)
+setwd(new_dir)
 
 
 
@@ -65,7 +65,7 @@ cna_values <- data.frame(value=as.numeric(data_cna[erbb2_indx,-c(1,2)]))
 
 ggplot(cna_values, aes(x=value)) +
   geom_histogram(binwidth=0.5, fill = "aquamarine3") +
-  labs(x = "CNA Value", y = "Count", title = "Histogram of CNA values for ERBB2 Gene") +
+  labs(x = "Copy Number Abberation Value", y = "Number of Patients", title = "Histogram of Copy Number Abberation values for ERBB2 Gene") +
   theme_light(base_size = 14)
 
 
@@ -79,11 +79,6 @@ rna_cna_id = which(is.element(colnames(data_Rnaseq[,-c(1,2)]), colnames(data_cna
 
 # select only the rna cases which have cna data.
 rna_cna_sub = data_Rnaseq[,2+rna_cna_id]
-
-# check all patients in rna_can_sub are in cna
-no_pats_in_rna_cna_sub_and_cna = sum(is.element(colnames(data_Rnaseq[,2+rna_cna_id]), colnames(data_cna[,-c(1,2)]))) 
-# sanity check.This will print an error if the result is not the same.
-sanity_check = no_pats_in_rna_cna_sub_and_cna == dim(rna_cna_sub)[2]
 
 
 
@@ -105,26 +100,6 @@ for (i in 1:length(rna_cna_id)){
   meta_erbb2[i,] = 1*(data_cna[erbb2_indx,col_cna]>0)
 }
 
-
-# simple checks to make sure. 
-col_i = colnames(rna_cna_sub)[1]
-
-col_cna = which(colnames(data_cna)==col_i)
-
-# sanity check
-
-(data_cna[erbb2_indx,col_cna]>0) == meta_erbb2[1,1]
-
-# see now if a positive meta_erbb2 is amplified.
-pos_example = which(meta_erbb2==1)[1]
-
-col_i = colnames(rna_cna_sub)[pos_example]
-col_cna = which(colnames(data_cna)==col_i)
-
-# sanity check
-(data_cna[erbb2_indx,col_cna]>0) == meta_erbb2[pos_example,1]
-
-# botch checks should print true.
 
 # We will add a title to the metadata.
 colnames(meta_erbb2) = 'ERBB2Amp'
@@ -220,22 +195,26 @@ plotCounts(dds, gene=which.min(res$padj), intgroup="ERBB2Amp")
 # --------------
 
 # For Pathway Enrichment we need Entrez IDs
-entrez_all = data_Rnaseq[signif,2]
+# retrieve IDs of genes passed to normalise
+entrez_ids = data_Rnaseq[keep,2]
+entrez_all = entrez_ids[signif]
 
-# selecting rows which are significant, getting geneID for those rows
-entrez_up = data_Rnaseq[signif[deg[,2]>0.],2]
-entrez_down = data_Rnaseq[signif[deg[,2]<0.],2]
+
+entrez_up = entrez_all[signif[deg[,2]>0.]]
+entrez_down = entrez_all[signif[deg[,2]<0.]]
 
 # Do a KEGG pathway over-representation analysis
-all_paths =   enrichKEGG(gene = entrez_all, organism = 'hsa', pvalueCutoff = 0.1)
-head(all_paths,10)
+all_paths = enrichKEGG(gene = entrez_all, organism = 'hsa', pvalueCutoff = 0.05)
 
 # dot plot of top 10 over-represented pathways
 dotplot(all_paths, showCategory=10)
 
 # Optionally you can divide between up and down.
-up_paths = enrichKEGG(gene = entrez_up, organism = 'hsa', pvalueCutoff = 0.2)
-down_paths = enrichKEGG(gene = entrez_down, organism = 'hsa', pvalueCutoff = 0.1)
+up_paths = enrichKEGG(gene = entrez_up, organism = 'hsa', pvalueCutoff = 0.05)
+dotplot(up_paths, showCategory=10)
+down_paths = enrichKEGG(gene = entrez_down, organism = 'hsa', pvalueCutoff = 0.05)
+dotplot(down_paths, showCategory=10)
+
 
 # --------------
 # 11. Get the variance stabilised transformed expression values.
@@ -243,6 +222,8 @@ down_paths = enrichKEGG(gene = entrez_down, organism = 'hsa', pvalueCutoff = 0.1
 
 # Transform the data to visualize
 vsd <- vst(dds, blind=FALSE)
+
+
 
 # --------------
 # 12. With the vst values obtain a PCA plot.
@@ -255,36 +236,141 @@ plotPCA(vsd, intgroup=c("ERBB2Amp"), ntop = 500)
 # 13. Cluster the data and show in PCA
 # --------------
 
+library("factoextra")
+
+# list of DEG genes
+deg_gene_names = rownames(deg)
+
+# VSD gene expression counts data
+norm_data = assay(vsd)
+
+# keep only patients with CNA > 0
+upreg_cna <- data_cna[erbb2_indx, -c(1,2)]
+upreg_patients <- colnames(upreg_cna)[which(upreg_cna>0)]
+deg_norm_data <- norm_data[, colnames(norm_data) %in% upreg_patients]
+
+# keep only DEG genes
+deg_norm_data <- norm_data[rownames(norm_data) %in% deg_gene_names, ]
+
+# euclidean distance between genes
+sampleDists <- dist(deg_norm_data,  method = "euclidean")
+
+# perform agglomerative hierarchical clustering, using complete linakge
+hc=hclust(sampleDists, method = "complete")
+
+# plot dendrogram
+plot(hc, hang=-1)
+
+# cut the tree into 20 clusters
+grp <-cutree(hc, k=20) 
+
+# visualise the cluster using PCA
+fviz_cluster(list(data=deg_norm_data, cluster=grp), main = "PCA Plot for 20 Clusters of Hierarchical Clustering")
 
 # --------------
 # 14. With the vst values of the DE genes generate an overall survival model.
 # --------------
 
+library(dplyr)
+library(survival)
+library(survminer)
+
+# get survival status from patient data
+survival_data <- select(data_patient, "X.Patient.Identifier", "Overall.Survival.Status", "Overall.Survival..Months.")
+survival_data <- survival_data |> rename("PatientID" = "X.Patient.Identifier", "Overall.Survival.Months" = "Overall.Survival..Months.")
+survival_data <- tail(survival_data, -4)
+survival_data$Overall.Survival.Months <-  as.numeric(survival_data$Overall.Survival.Months)
+
+# reformat survival status
+for (i in 1:dim(survival_data)[1]){
+  status = survival_data[i,2]
+  status = substr(status, 1, 1)
+  survival_data[i,2] = status
+}
+
+# convert survival status to numeric values
+survival_data$Overall.Survival.Status <-  as.numeric(survival_data$Overall.Survival.Status)
+
+# DEG counts
+deg_norm_data_t <- t(deg_norm_data)
+deg_norm_data_t <- as.data.frame(deg_norm_data_t)
+deg_norm_data_t <- tibble::rownames_to_column(deg_norm_data_t, "PatientID")
+
+# filter to only ERBB2 amplified patients
+deg_norm_data_t <- deg_norm_data_t[deg_norm_data_t$PatientID %in% upreg_patients, ]
+
+
+# align format of patientID
+for (i in 1:dim(deg_norm_data_t)[1]){
+  pat_barcode = deg_norm_data_t[i,1]
+  pat_barcode = substr(pat_barcode, 1, 12)
+  pat_barcode = gsub("\\.", "-",pat_barcode)
+  deg_norm_data_t[i,1] = pat_barcode
+}
+
+merged_data <- merge(deg_norm_data_t, survival_data, by = "PatientID", all.x = TRUE)
+
+surv_obj <- Surv(time = merged_data$Overall.Survival.Months, event = merged_data$Overall.Survival.Status)
+
+# create the cox model using the top 10 DEGs as variables
+cox_model <- coxph(surv_obj~CSN2+SPANXA2+GAGE12D+SPANXC+GAGE2B+CSN3+FAM9C+PNMT+GAGE4+LALBA, data = merged_data)
+
+summary(cox_model)
+
+# survival plot
+ggsurvplot(survfit(cox_model), data = merged_data,  risk.table = TRUE, 
+           legend = "none", 
+           title = "Kaplan-Meier Survival Curve for ERBB2 Amplified Patients", 
+           xlab = "Time (Months)",
+           ggtheme = theme_light())
 
 
 # --------------
 # 15. Use lasso cross validation to find the set of genes which predict survival the best.
 # --------------
 
+library(glmnet)
 
+# remove patients with survival times = 0, not accepted by glmnet
+merged_data_cv <- filter(merged_data, merged_data$Overall.Survival.Months != 0)
 
-# Instructions ------------------------------------------------------------
+# build survival data 
+survival_cv <- with(merged_data_cv, Surv(merged_data_cv$Overall.Survival.Months, merged_data_cv$Overall.Survival.Status))
 
-# Download the dataset on: https://www.cbioportal.org/study/summary?id=brca_tcga_pan_can_atlas_2018
-# Untar the folder and extract the files.
-# Read the RNASeq file: data_mrna_seq_v2_rsem.txt
-# Read the Patient Data file: data_clinical_patient.txt
-# Read the Copy Number Aberrations Data: data_cna.txt
-# Match the RNASeq patient ids with the CNA ids and the Patient Data ids.
-# Create metadata using the CNA level of ERBB2+ (greater than 0 means amplified).
-# Normalize data using DESeq2.
-# Obtain Differentially Expressed Genes.
-# Perform a Pathway Enrichment Analysis
-# Get the variance stabilised transformed expression values.
-# With the vst values obtain a PCA plot.
+# remove non gene columns
+filtered_data <- select(merged_data_cv, -c("PatientID", "Overall.Survival.Months", "Overall.Survival.Status"))
 
+# Prepare data for glmnet
+gene_data <- as.matrix(filtered_data)
+sv_data <- survival_cv
 
-# Optional for Additional Marks
-# Cluster the data and show in PCA
-# With the vst values of the DE genes generate an overall survival model.
-# Use lasso cross validation to find the set of genes which predict survival the best.
+# Perform Lasso with cross-validation
+lasso_cv <- cv.glmnet(gene_data, sv_data, family = "cox")
+
+# choose the min value for lambda
+lambda_opt <- lasso_cv$lambda.min
+
+# use this value in regression
+opt_model <- glmnet(gene_data, sv_data, family = "cox", lambda = lambda_opt)
+
+selected_genes <- coef(opt_model)
+
+# Identify non-zero coefficients to find selected genes
+selected_genes <- rownames(selected_genes)[apply(selected_genes, 1, function(x) sum(x != 0) > 0)]
+
+selected_genes
+
+# use optimal set of genes for survival prediction
+
+# create the cox model using the gene identified for survival
+cox_model <- coxph(surv_obj~C20orf118, data = merged_data)
+
+summary(cox_model)
+
+# survival plot
+ggsurvplot(survfit(cox_model), data = merged_data,  risk.table = TRUE, 
+           legend = "none", 
+           title = "Kaplan-Meier Survival Curve for ERBB2 Amplified Patients", 
+           xlab = "Time (Months)",
+           ggtheme = theme_light())
+
